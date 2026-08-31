@@ -99,13 +99,12 @@ def main() -> int:
         if not ok:
             print(f"[check] LINE送信に失敗: {vid}（月間上限の可能性）")
 
-        state.append_recent_summary(
+        state.append_recent_video(
             {
                 "video_id": vid,
                 "channel_name": channel_name,
                 "title": title,
                 "url": url,
-                "chapters": chapters,
                 "processed_at": datetime.now(timezone.utc).isoformat(),
             }
         )

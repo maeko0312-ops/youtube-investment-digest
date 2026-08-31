@@ -7,7 +7,7 @@ on:
   workflow_dispatch: {}
 
 permissions:
-  contents: read
+  contents: write
 
 concurrency:
   group: daily-investment-digest
@@ -26,15 +26,6 @@ jobs:
       - name: Install dependencies
         run: pip install -r requirements.txt
 
-      # check.yml と同じキャッシュ領域を共有し、直近の要約データを読む。
-      - name: Restore state cache
-        uses: actions/cache/restore@v4
-        with:
-          path: state
-          key: state-cache-${{ github.run_id }}
-          restore-keys: |
-            state-cache-
-
       - name: Run daily_digest.py
         env:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
@@ -42,9 +33,15 @@ jobs:
           LINE_GROUP_ID: ${{ secrets.LINE_GROUP_ID }}
         run: python daily_digest.py
 
-      - name: Save state cache
-        if: always()
-        uses: actions/cache/save@v4
-        with:
-          path: state
-          key: state-cache-${{ github.run_id }}
+      - name: Commit updated state
+        run: |
+          git config user.name "youtube-digest-bot"
+          git config user.email "actions@users.noreply.github.com"
+          git add state/
+          if ! git diff --cached --quiet; then
+            git commit -m "chore: clear recent videos after daily digest [skip ci]"
+            git pull --rebase origin main
+            git push
+          else
+            echo "No state changes"
+          fi

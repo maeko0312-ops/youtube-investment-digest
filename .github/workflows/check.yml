@@ -6,7 +6,7 @@ on:
   workflow_dispatch: {}
 
 permissions:
-  contents: read
+  contents: write
 
 concurrency:
   group: check-new-videos
@@ -25,17 +25,6 @@ jobs:
       - name: Install dependencies
         run: pip install -r requirements.txt
 
-      # 生成した要約テキストなどの状態は git にコミットせず、リポジトリ外からは
-      # 見えない Actions キャッシュに保存する（public リポジトリの履歴に
-      # AI生成コンテンツを残さないため）。
-      - name: Restore state cache
-        uses: actions/cache/restore@v4
-        with:
-          path: state
-          key: state-cache-${{ github.run_id }}
-          restore-keys: |
-            state-cache-
-
       - name: Run check_new_videos.py
         env:
           YOUTUBE_API_KEY: ${{ secrets.YOUTUBE_API_KEY }}
@@ -44,9 +33,17 @@ jobs:
           LINE_GROUP_ID: ${{ secrets.LINE_GROUP_ID }}
         run: python check_new_videos.py
 
-      - name: Save state cache
-        if: always()
-        uses: actions/cache/save@v4
-        with:
-          path: state
-          key: state-cache-${{ github.run_id }}
+      # state/ に保存されるのは動画ID・チャンネル名・タイトルなど、元々YouTube上で
+      # 公開されている情報のみ（Gemini生成の要約本文は含まれない）。
+      - name: Commit updated state
+        run: |
+          git config user.name "youtube-digest-bot"
+          git config user.email "actions@users.noreply.github.com"
+          git add state/
+          if ! git diff --cached --quiet; then
+            git commit -m "chore: update state [skip ci]"
+            git pull --rebase origin main
+            git push
+          else
+            echo "No state changes"
+          fi

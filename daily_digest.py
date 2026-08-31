@@ -1,5 +1,9 @@
-"""毎朝5:00 JST(=20:00 UTC)に実行: 直近の新着動画の要約を横断して
+"""毎朝5:00 JST(=20:00 UTC)に実行: 直近の新着動画を横断して
 「今後の投資戦略」ダイジェストを作りLINEグループへ送る。
+
+state/recent_videos.json にはチャプター要約の本文は保存されていない
+（動画ID・チャンネル名・タイトルなど公開情報のみ）。そのため、ここで
+改めて各動画をGeminiに解析させてチャプターを取得し、横断ダイジェストを作る。
 
 必要な環境変数:
   GEMINI_API_KEY
@@ -16,14 +20,18 @@ from lib import line, state, summarize
 NO_UPDATE_MESSAGE = "【本日の投資戦略ダイジェスト】\n直近、監視対象チャンネルからの新着動画はありませんでした。"
 
 
-def build_summaries_text(entries: list[dict]) -> str:
+def build_summaries_text(client, entries: list[dict]) -> str:
     parts = []
     for e in entries:
         parts.append(f"◆ {e['channel_name']} 『{e['title']}』")
-        for ch in e.get("chapters") or []:
-            heading = ch.get("heading", "")
-            summary = ch.get("summary", "")
-            parts.append(f"  - {heading}: {summary}")
+        chapters = summarize.analyze_video_chapters(client, e["url"])
+        if not chapters:
+            parts.append("  (この動画は要約の再取得に失敗しました。タイトルのみ参考にしてください)")
+        else:
+            for ch in chapters:
+                heading = ch.get("heading", "")
+                summary = ch.get("summary", "")
+                parts.append(f"  - {heading}: {summary}")
         parts.append("")
     return "\n".join(parts)
 
@@ -33,15 +41,15 @@ def main() -> int:
     line_token = os.environ["LINE_CHANNEL_ACCESS_TOKEN"]
     line_group_id = os.environ["LINE_GROUP_ID"]
 
-    entries = state.load_recent_summaries()
+    entries = state.load_recent_videos()
 
     if not entries:
         line.push_text(line_token, line_group_id, NO_UPDATE_MESSAGE)
         print("[daily] 新着なしのため簡易メッセージのみ送信")
         return 0
 
-    summaries_text = build_summaries_text(entries)
     gemini_client = summarize.get_client(gemini_api_key)
+    summaries_text = build_summaries_text(gemini_client, entries)
     digest = summarize.build_daily_digest(gemini_client, summaries_text)
 
     if digest is None:
@@ -53,9 +61,9 @@ def main() -> int:
     message = "【本日の投資戦略ダイジェスト】\n" + digest
     ok = line.push_text(line_token, line_group_id, message)
     if not ok:
-        print("[daily] LINE送信に失敗（月間上限の可能性）")
+        print("[daily] LINE送信に失敗(月間上限の可能性)")
 
-    state.clear_recent_summaries()
+    state.clear_recent_videos()
     print(f"[daily] 完了: {len(entries)}件の動画を元にダイジェストを作成")
     return 0
 

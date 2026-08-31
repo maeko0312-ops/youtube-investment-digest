@@ -3,22 +3,25 @@
 Gemini APIは動画URL（YouTubeのURL）を直接渡して内容を解析できるため、
 別途の文字起こし取得は行わない。解析に失敗した場合は呼び出し側で
 タイトルのみの簡易メッセージにフォールバックすること。
+
+2026年に導入された Interactions API (`client.interactions.create`) を使用する。
+google-genai は 2.3.0 以降が必要（requirements.txt を参照）。
 """
 from __future__ import annotations
 
 import json
 import os
+import re
 
 from google import genai
-from google.genai import types
 
-DEFAULT_MODEL = os.environ.get("GEMINI_MODEL", "gemini-2.5-flash")
+DEFAULT_MODEL = os.environ.get("GEMINI_MODEL", "gemini-3.5-flash")
 
 CHAPTER_PROMPT = """あなたは投資解説YouTube動画の内容を要約するアシスタントです。
 渡された動画を確認し、内容のまとまりごとにチャプターへ分割してください。
 （動画の概要欄に著者自身のチャプター表記があればそれを優先して構いません）
 
-出力は必ず以下のJSON形式のみで、説明文は付けないでください。
+出力は必ず以下のJSON形式のみで、説明文やMarkdownのコードブロック記法は付けないでください。
 {
   "chapters": [
     {"start_time": "0:00", "heading": "チャプターの見出し（15文字程度）", "summary": "このチャプターの要点を日本語2〜3文で。銘柄名・数値・結論などの具体情報を優先すること"}
@@ -46,41 +49,47 @@ DAILY_DIGEST_PROMPT_TEMPLATE = """あなたは複数の投資解説YouTubeチャ
 という紹介の形式を基本とします。全体で2000文字程度に収めてください。
 """
 
+_JSON_FENCE_RE = re.compile(r"^```(?:json)?\s*|\s*```$", re.MULTILINE)
+
 
 def get_client(api_key: str) -> genai.Client:
     return genai.Client(api_key=api_key)
 
 
+def _extract_json(text: str) -> dict:
+    """モデル出力からJSON部分を取り出す（```json フェンス等が付いていても対応）。"""
+    cleaned = _JSON_FENCE_RE.sub("", text).strip()
+    return json.loads(cleaned)
+
+
 def analyze_video_chapters(client: genai.Client, video_url: str, model: str = DEFAULT_MODEL) -> list[dict] | None:
-    """動画をGeminiに解析させ、チャプターのリストを返す。失敗時はNone。"""
+    """動画をGeminiに解析させ、チャプターのリストを返す。失敗時はNoneを返し、原因をログに出す。"""
     try:
-        response = client.models.generate_content(
+        interaction = client.interactions.create(
             model=model,
-            contents=types.Content(
-                parts=[
-                    types.Part(file_data=types.FileData(file_uri=video_url)),
-                    types.Part(text=CHAPTER_PROMPT),
-                ]
-            ),
-            config=types.GenerateContentConfig(
-                response_mime_type="application/json",
-            ),
+            input=[
+                {"type": "text", "text": CHAPTER_PROMPT},
+                {"type": "video", "uri": video_url},
+            ],
         )
-        data = json.loads(response.text)
+        data = _extract_json(interaction.output_text)
         chapters = data.get("chapters")
         if not isinstance(chapters, list) or not chapters:
+            print(f"[gemini] チャプターが空またはJSON形式不正: {video_url}")
             return None
         return chapters
-    except Exception:
+    except Exception as e:
+        print(f"[gemini] 動画解析に失敗 url={video_url}: {type(e).__name__}: {e}")
         return None
 
 
 def build_daily_digest(client: genai.Client, summaries_text: str, model: str = DEFAULT_MODEL) -> str | None:
-    """直近の要約テキストを渡し、横断的な投資戦略ダイジェストを生成する。失敗時はNone。"""
+    """直近の要約テキストを渡し、横断的な投資戦略ダイジェストを生成する。失敗時はNoneを返し、原因をログに出す。"""
     try:
         prompt = DAILY_DIGEST_PROMPT_TEMPLATE.format(summaries_text=summaries_text)
-        response = client.models.generate_content(model=model, contents=prompt)
-        text = (response.text or "").strip()
+        interaction = client.interactions.create(model=model, input=prompt)
+        text = (interaction.output_text or "").strip()
         return text or None
-    except Exception:
+    except Exception as e:
+        print(f"[gemini] 日次ダイジェスト生成に失敗: {type(e).__name__}: {e}")
         return None

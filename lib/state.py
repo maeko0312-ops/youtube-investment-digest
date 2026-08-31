@@ -1,0 +1,81 @@
+"""state/ 以下のJSONファイルを読み書きするヘルパー。
+
+状態はすべてリポジトリ内のJSONファイルとして保存し、ワークフローが
+実行後にコミット&プッシュすることで永続化する（追加のDBを使わない）。
+"""
+from __future__ import annotations
+
+import json
+import os
+from datetime import datetime, timedelta, timezone
+from typing import Any
+
+STATE_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "state")
+
+SEEN_PATH = os.path.join(STATE_DIR, "seen.json")
+PENDING_LIVE_PATH = os.path.join(STATE_DIR, "pending_live.json")
+RECENT_SUMMARIES_PATH = os.path.join(STATE_DIR, "recent_summaries.json")
+
+RECENT_SUMMARIES_RETENTION_DAYS = 2
+
+
+def _load(path: str, default: Any) -> Any:
+    if not os.path.exists(path):
+        return default
+    with open(path, "r", encoding="utf-8") as f:
+        content = f.read().strip()
+        if not content:
+            return default
+        return json.loads(content)
+
+
+def _save(path: str, data: Any) -> None:
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(data, f, ensure_ascii=False, indent=2, sort_keys=True)
+        f.write("\n")
+
+
+def load_seen() -> set[str]:
+    """処理済み動画IDの集合を返す。"""
+    return set(_load(SEEN_PATH, []))
+
+
+def save_seen(seen_ids: set[str]) -> None:
+    _save(SEEN_PATH, sorted(seen_ids))
+
+
+def load_pending_live() -> dict[str, dict]:
+    """配信中で未処理のライブ動画（video_id -> メタ情報）を返す。"""
+    return _load(PENDING_LIVE_PATH, {})
+
+
+def save_pending_live(pending: dict[str, dict]) -> None:
+    _save(PENDING_LIVE_PATH, pending)
+
+
+def load_recent_summaries() -> list[dict]:
+    """日次ダイジェスト用に、直近数日分のチャンネル別要約リストを返す。"""
+    return _load(RECENT_SUMMARIES_PATH, [])
+
+
+def append_recent_summary(entry: dict) -> None:
+    """1動画分の要約エントリを追記し、保持期間を過ぎた古いものは削除する。"""
+    entries = load_recent_summaries()
+    entries.append(entry)
+
+    cutoff = datetime.now(timezone.utc) - timedelta(days=RECENT_SUMMARIES_RETENTION_DAYS)
+    kept = []
+    for e in entries:
+        try:
+            ts = datetime.fromisoformat(e["processed_at"])
+        except (KeyError, ValueError):
+            continue
+        if ts >= cutoff:
+            kept.append(e)
+
+    _save(RECENT_SUMMARIES_PATH, kept)
+
+
+def clear_recent_summaries() -> None:
+    _save(RECENT_SUMMARIES_PATH, [])

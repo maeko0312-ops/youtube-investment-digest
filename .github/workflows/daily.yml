@@ -1,0 +1,46 @@
+name: Daily investment digest
+
+on:
+  schedule:
+    # 20:00 UTC = 5:00 JST（GitHub Actionsの仕様上、実際の実行は数分〜数十分ずれることがある）
+    - cron: "0 20 * * *"
+  workflow_dispatch: {}
+
+permissions:
+  contents: write
+
+concurrency:
+  group: daily-investment-digest
+  cancel-in-progress: false
+
+jobs:
+  digest:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run daily_digest.py
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          LINE_CHANNEL_ACCESS_TOKEN: ${{ secrets.LINE_CHANNEL_ACCESS_TOKEN }}
+          LINE_GROUP_ID: ${{ secrets.LINE_GROUP_ID }}
+        run: python daily_digest.py
+
+      - name: Commit updated state
+        run: |
+          git config user.name "youtube-digest-bot"
+          git config user.email "actions@users.noreply.github.com"
+          git add state/
+          if ! git diff --cached --quiet; then
+            git commit -m "chore: clear recent summaries after daily digest [skip ci]"
+            git push
+          else
+            echo "No state changes"
+          fi
